@@ -135,7 +135,9 @@ func (y YamlProcessor) getLogs(source []datadogV2.Log) ([][]string, error) {
 			if fl.Field == "-" {
 				field_dep := strings.Split(fl.DdField, ".")
 				n := len(field_dep)
-				log.Attributes.Attributes["message"] = *log.Attributes.Message
+				if log.Attributes.HasMessage() {
+					log.Attributes.Attributes["message"] = *log.Attributes.Message
+				}
 				var outerObj = deepSearch(log.Attributes.Attributes, field_dep)
 				var newDdVal []string
 
@@ -148,7 +150,9 @@ func (y YamlProcessor) getLogs(source []datadogV2.Log) ([][]string, error) {
 				continue
 			}
 
-			log.Attributes.Attributes["message"] = *log.Attributes.Message
+			if log.Attributes.HasMessage() {
+				log.Attributes.Attributes["message"] = *log.Attributes.Message
+			}
 			val := getValue(fl, log.Attributes.Attributes)
 			ddVal = append(ddVal, fmt.Sprint(val))
 		}
