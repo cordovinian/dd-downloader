@@ -1,11 +1,13 @@
 package processor
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/DataDog/datadog-api-client-go/v2/api/datadogV2"
 	csv_processor "github.com/girishg4t/dd-downloader/pkg/csv"
@@ -44,6 +46,12 @@ func (y YamlProcessor) Validate(filename string) (out [][]string, err error) {
 	}()
 	out = [][]string{}
 	var headers []string
+	// Custom: add each log attribute
+	headers = append(headers, "timestamp")
+	headers = append(headers, "service")
+	headers = append(headers, "status")
+	headers = append(headers, "message")
+	headers = append(headers, "attributes")
 	util.ReadHeader(y.Yaml.Spec.Mapping, &headers)
 	out = append(out, headers)
 	logs := dd.GetDataDogLogs(y.Yaml.Spec.DatadogFilter, nil, 10)
@@ -60,9 +68,17 @@ func (y YamlProcessor) Validate(filename string) (out [][]string, err error) {
 // run the datadog downloader sequentially based on query util all logs are downloaded
 func (y YamlProcessor) RunSync() error {
 	var headers []string
+	// Custom: add each log attribute
+	headers = append(headers, "timestamp")
+	headers = append(headers, "service")
+	headers = append(headers, "status")
+	headers = append(headers, "message")
+	headers = append(headers, "attributes")
 	util.ReadHeader(y.Yaml.Spec.Mapping, &headers)
 	csv_processor.CsvWriter(y.CsvFile, headers, nil)
 	ddLogs = func(after *string) {
+		// Note: Datadog Rate limit seems to be 2 requests per 10 second period
+		time.Sleep(6 * time.Second)
 		logs := dd.GetDataDogLogs(y.Yaml.Spec.DatadogFilter, after, 5000)
 
 		log.Printf("Found records => %d \n", len(logs.Data))
@@ -129,16 +145,30 @@ func (y YamlProcessor) RunParallel(ch chan [][]string, done chan bool) {
 // one's found we need to get all values based on inner mapping
 func (y YamlProcessor) getLogs(source []datadogV2.Log) ([][]string, error) {
 	var csvValues [][]string
-	for _, log := range source {
+	for _, log_entry := range source {
 		var ddVal []string
+		// Custom: add each log attribute
+		ddVal = append(ddVal, log_entry.Attributes.Timestamp.Format(time.RFC3339))
+		ddVal = append(ddVal, *log_entry.Attributes.Service)
+		ddVal = append(ddVal, *log_entry.Attributes.Status)
+		ddVal = append(ddVal, fmt.Sprintf("\"%s\"", log_entry.Attributes.GetMessage()))
+		attributes_json, err := json.Marshal(log_entry.Attributes.Attributes)
+		if err != nil {
+			log.Fatalf(err.Error())
+		}
+		ddVal = append(ddVal, fmt.Sprintf("'%s'", attributes_json))
+
+		if log_entry.Attributes.HasMessage() {
+			log_entry.Attributes.Attributes["message"] = fmt.Sprintf("\"%s\"", *log_entry.Attributes.Message)
+		} else {
+			log_entry.Attributes.Attributes["message"] = "\"\""
+		}
+
 		for _, fl := range y.Yaml.Spec.Mapping {
 			if fl.Field == "-" {
 				field_dep := strings.Split(fl.DdField, ".")
 				n := len(field_dep)
-				if log.Attributes.HasMessage() {
-					log.Attributes.Attributes["message"] = *log.Attributes.Message
-				}
-				var outerObj = deepSearch(log.Attributes.Attributes, field_dep)
+				var outerObj = deepSearch(log_entry.Attributes.Attributes, field_dep)
 				var newDdVal []string
 
 				obj, ok := outerObj[field_dep[n-1]].([]interface{})
@@ -150,10 +180,7 @@ func (y YamlProcessor) getLogs(source []datadogV2.Log) ([][]string, error) {
 				continue
 			}
 
-			if log.Attributes.HasMessage() {
-				log.Attributes.Attributes["message"] = *log.Attributes.Message
-			}
-			val := getValue(fl, log.Attributes.Attributes)
+			val := getValue(fl, log_entry.Attributes.Attributes)
 			ddVal = append(ddVal, fmt.Sprint(val))
 		}
 		csvValues = append(csvValues, ddVal)
